@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Exchange arb scanner</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-0: #f4f4f2;
+    --surface-1: #fcfcfb;
+    --border: #e4e3df;
+    --grid: #ecebe7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #85847f;
+    --series-1: #2a78d6;
+    --good: #008300;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface-0); }
+  .viz-root { font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text-primary);
+    max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 2px; }
+  .sub { color: var(--text-secondary); margin: 0 0 16px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .tile, .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .tile .k { color: var(--text-secondary); font-size: 12px; }
+  .tile .v { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tile .n { color: var(--text-muted); font-size: 12px; }
+  .card { margin-bottom: 14px; }
+  .card h2 { font-size: 14px; margin: 0 0 2px; }
+  .card p { margin: 0 0 8px; color: var(--text-secondary); font-size: 12px; }
+  select, button { font: inherit; padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-1); color: var(--text-primary); }
+  button.on { border-color: var(--text-primary); }
+  .chart { position: relative; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .axis text { fill: var(--text-muted); font-size: 11px; }
+  .tip { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.08); display: none; white-space: nowrap; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  th { color: var(--text-secondary); font-weight: 600; cursor: pointer; white-space: nowrap; }
+  td.num, th.num { text-align: right; }
+  td.legs { color: var(--text-secondary); font-size: 12px; }
+  .pos { color: var(--good); font-weight: 600; }
+  .empty { color: var(--text-muted); padding: 18px 4px; }
+  .note { color: var(--text-muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="viz-root">
+  <h1>Exchange arb scanner</h1>
+  <p class="sub">Smarkets vs Matchbook, football and tennis match odds, pre-match. Read-only: places no bets. Profits are after commission.</p>
+
+  <div class="row" id="ranges"></div>
+  <div class="tiles" id="tiles"></div>
+
+  <div class="card">
+    <h2>Closest gap per scan (%)</h2>
+    <p>Best commission-adjusted margin found in each scan. Above 0% is a guaranteed profit.</p>
+    <div class="chart" id="margin"></div>
+  </div>
+
+  <div class="card">
+    <h2>Near misses per scan</h2>
+    <p>Opportunities within 0.5% of breaking even. Shows how often prices get close.</p>
+    <div class="chart" id="near"></div>
+  </div>
+
+  <div class="card">
+    <h2>Arbs found</h2>
+    <p>Each row is one arb that stayed open across consecutive scans (about 30s apart). Stake is limited by the money visible at the price.</p>
+    <div id="table"></div>
+  </div>
+  <p class="note" id="status">Loading…</p>
+</div>
+
+<script>
+const params = new URLSearchParams(location.search);
+const DATA = params.get("data") || "https://raw.githubusercontent.com/scriptmunkee/exchange-arb-scanner/data/data/";
+const RANGES = [["24h", 1], ["7d", 7], ["30d", 30], ["All", 3650]];
+let range = 7, scans = [], episodes = [], sortKey = "best_max_profit", sortDir = -1;
+
+function parseCSV(text) {
+  const rows = []; let row = [], cell = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') q = false; else cell += c; }
+    else if (c === '"') q = true;
+    else if (c === ",") { row.push(cell); cell = ""; }
+    else if (c === "\n") { row.push(cell); rows.push(row); row = []; cell = ""; }
+    else if (c !== "\r") cell += c;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  const [head, ...body] = rows.filter(r => r.length > 1);
+  return head ? body.map(r => Object.fromEntries(head.map((h, i) => [h, r[i]]))) : [];
+}
+async function fetchCSV(name) {
+  try { const r = await fetch(DATA + name, { cache: "no-store" }); return r.ok ? parseCSV(await r.text()) : []; }
+  catch { return []; }
+}
+function months(n) {
+  const out = [], d = new Date(); d.setUTCDate(1);
+  for (let i = 0; i < n; i++) { out.push(`scans-${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}.csv`); d.setUTCMonth(d.getUTCMonth() - 1); }
+  return out;
+}
+const fmtGBP = v => "£" + (+v).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtTime = d => d.toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+const fmtDur = s => s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
+const median = a => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+
+function inRange(ts) { return Date.now() - new Date(ts).getTime() <= range * 864e5; }
+
+function renderRanges() {
+  const el = document.getElementById("ranges");
+  el.innerHTML = RANGES.map(([l, d]) => `<button data-d="${d}" class="${d === range ? "on" : ""}">${l}</button>`).join("");
+  el.querySelectorAll("button").forEach(b => b.onclick = () => { range = +b.dataset.d; render(); });
+}
+
+function renderTiles(s, e) {
+  const last = s[s.length - 1];
+  const tiles = [
+    ["Scans", s.length.toLocaleString("en-GB"), last ? "last " + fmtTime(new Date(last.ts)) : "none yet"],
+    ["Events matched", last ? last.matched_events : "–", "in the latest scan"],
+    ["Arbs found", e.length, e.filter(x => +x.best_max_profit >= 1).length + " worth £1 or more"],
+    ["Median open time", e.length ? fmtDur(median(e.map(x => +x.duration_s))) : "–", "how long a gap lasted"],
+    ["Total if all taken", fmtGBP(e.reduce((a, x) => a + +x.best_max_profit, 0)), "at best visible stake"],
+  ];
+  document.getElementById("tiles").innerHTML = tiles.map(([k, v, n]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="n">${n}</div></div>`).join("");
+}
+
+function lineChart(id, pts, { zero = false, fmt = v => v.toFixed(2), unit = "" } = {}) {
+  const host = document.getElementById(id);
+  if (!pts.length) { host.innerHTML = `<div class="empty">No scans in this range yet.</div>`; return; }
+  const W = 1000, H = 240, m = { l: 44, r: 12, t: 10, b: 26 };
+  const xs = pts.map(p => p.t), ys = pts.map(p => p.v);
+  let y0 = Math.min(...ys, zero ? 0 : Infinity), y1 = Math.max(...ys, zero ? 0 : -Infinity);
+  if (y0 === y1) { y0 -= 1; y1 += 1; }
+  const pad = (y1 - y0) * 0.08; y0 -= pad; y1 += pad;
+  const x0 = Math.min(...xs), x1 = Math.max(...xs) || x0 + 1;
+  const X = t => m.l + (W - m.l - m.r) * (x1 === x0 ? 0.5 : (t - x0) / (x1 - x0));
+  const Y = v => m.t + (H - m.t - m.b) * (1 - (v - y0) / (y1 - y0));
+  const ticks = 4, yt = Array.from({ length: ticks + 1 }, (_, i) => y0 + (y1 - y0) * i / ticks);
+  const xt = Array.from({ length: 5 }, (_, i) => x0 + (x1 - x0) * i / 4);
+  const path = pts.map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Y(p.v).toFixed(1)}`).join("");
+  host.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${id} over time">
+      <g class="axis">${yt.map(v => `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--grid)"/><text x="${m.l - 6}" y="${Y(v) + 4}" text-anchor="end">${fmt(v)}${unit}</text>`).join("")}
+        ${xt.map(t => `<text x="${X(t)}" y="${H - 6}" text-anchor="middle">${fmtTime(new Date(t))}</text>`).join("")}</g>
+      ${zero ? `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--text-secondary)" stroke-dasharray="4 4"/>
+        <text x="${W - m.r}" y="${Y(0) - 5}" text-anchor="end" fill="var(--text-secondary)" font-size="11">break-even</text>` : ""}
+      <path d="${path}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round"/>
+      <line class="xh" y1="${m.t}" y2="${H - m.b}" stroke="var(--text-muted)" visibility="hidden"/>
+      <circle class="dot" r="4.5" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2" visibility="hidden"/>
+      <rect x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent"/>
+    </svg><div class="tip"></div>`;
+  const svg = host.querySelector("svg"), tip = host.querySelector(".tip"), xh = host.querySelector(".xh"), dot = host.querySelector(".dot");
+  svg.addEventListener("pointermove", ev => {
+    const r = svg.getBoundingClientRect(), sx = (ev.clientX - r.left) * W / r.width;
+    let best = pts[0]; for (const p of pts) if (Math.abs(X(p.t) - sx) < Math.abs(X(best.t) - sx)) best = p;
+    const px = X(best.t), py = Y(best.v);
+    xh.setAttribute("x1", px); xh.setAttribute("x2", px); xh.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", px); dot.setAttribute("cy", py); dot.setAttribute("visibility", "visible");
+    tip.style.display = "block";
+    tip.innerHTML = `<b>${fmt(best.v)}${unit}</b><br><span style="color:var(--text-secondary)">${fmtTime(new Date(best.t))}</span>`;
+    const left = px * r.width / W, flip = left > r.width - 140;
+    tip.style.left = (flip ? left - 130 : left + 10) + "px"; tip.style.top = (py * r.height / H - 10) + "px";
+  });
+  svg.addEventListener("pointerleave", () => { tip.style.display = "none"; xh.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); });
+}
+
+function renderTable(e) {
+  const host = document.getElementById("table");
+  if (!e.length) { host.innerHTML = `<div class="empty">No guaranteed-profit gaps yet in this range. The charts above show how close prices are getting.</div>`; return; }
+  const cols = [["first_seen", "Seen"], ["event_name", "Event"], ["kind", "Type"], ["best_profit_pct", "Profit %", 1], ["best_max_stake", "Max stake", 1], ["best_max_profit", "£ at max", 1], ["duration_s", "Open for", 1], ["best_legs", "Legs"]];
+  const rows = [...e].sort((a, b) => { const x = a[sortKey], y = b[sortKey]; return (isNaN(+x) ? String(x).localeCompare(y) : +x - +y) * sortDir; });
+  host.innerHTML = `<div style="overflow-x:auto"><table><thead><tr>${cols.map(([k, l, n]) => `<th class="${n ? "num" : ""}" data-k="${k}">${l}${sortKey === k ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}</tr></thead><tbody>
+    ${rows.slice(0, 500).map(r => `<tr><td>${fmtTime(new Date(r.first_seen))}</td><td>${r.event_name}<br><span class="note">${r.sport} · ${fmtTime(new Date(r.start))}</span></td>
+      <td>${r.kind === "dutch" ? "Back all" : "Back/lay " + r.selection}</td><td class="num pos">+${(+r.best_profit_pct).toFixed(2)}%</td>
+      <td class="num">${fmtGBP(r.best_max_stake)}</td><td class="num">${fmtGBP(r.best_max_profit)}</td><td class="num">${fmtDur(+r.duration_s)}</td>
+      <td class="legs">${r.best_legs.replaceAll(" | ", "<br>")}</td></tr>`).join("")}</tbody></table></div>`;
+  host.querySelectorAll("th").forEach(th => th.onclick = () => { const k = th.dataset.k; sortDir = sortKey === k ? -sortDir : -1; sortKey = k; renderTable(e); });
+}
+
+function render() {
+  renderRanges();
+  const s = scans.filter(r => inRange(r.ts)), e = episodes.filter(r => inRange(r.first_seen));
+  renderTiles(s, e);
+  lineChart("margin", s.filter(r => r.best_margin_pct !== "").map(r => ({ t: +new Date(r.ts), v: +r.best_margin_pct })), { zero: true, unit: "%" });
+  lineChart("near", s.map(r => ({ t: +new Date(r.ts), v: +(r.near_misses || 0) })), { fmt: v => Math.round(v).toString() });
+  renderTable(e);
+}
+
+(async () => {
+  const [eps, ...months_] = await Promise.all([fetchCSV("episodes.csv"), ...months(2).map(fetchCSV)]);
+  episodes = eps; scans = months_.flat().sort((a, b) => a.ts.localeCompare(b.ts));
+  document.getElementById("status").textContent = `Data: ${DATA} · ${scans.length} scans loaded · refreshes every 5 minutes`;
+  render();
+  setTimeout(() => location.reload(), 5 * 60 * 1000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+name: scan
+
+# Runs the read-only scanner for ~4.5 minutes every 5 minutes and commits the
+# CSV logs to the `data` branch. GitHub may delay or skip some scheduled runs.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Seconds to scan"
+        default: "270"
+
+concurrency:
+  group: scan
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out data branch
+        run: |
+          git config --global user.name "exarb-bot"
+          git config --global user.email "exarb-bot@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin data >/dev/null; then
+            git clone --depth 1 --branch data "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" databranch
+          else
+            mkdir databranch && cd databranch && git init -b data
+            git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Scan
+        env:
+          EXARB_COMMISSION: ${{ vars.EXARB_COMMISSION }}
+        run: python -m exarb --duration "${{ github.event.inputs.duration || '270' }}" --interval 30 --data-dir databranch/data
+
+      - name: Commit data
+        if: always()
+        run: |
+          cd databranch
+          git add -A data
+          git diff --cached --quiet && exit 0
+          git commit -q -m "scan $(date -u +%Y-%m-%dT%H:%MZ)"
+          for i in 1 2 3; do
+            git push origin data && break
+            git pull --rebase origin data || true
+            sleep 3
+          done
