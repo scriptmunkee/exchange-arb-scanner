@@ -142,7 +142,8 @@ function lineChart(id, pts, { zero = false, fmt = v => v.toFixed(2), unit = "" }
   const x0 = Math.min(...xs), x1 = Math.max(...xs) || x0 + 1;
   const X = t => m.l + (W - m.l - m.r) * (x1 === x0 ? 0.5 : (t - x0) / (x1 - x0));
   const Y = v => m.t + (H - m.t - m.b) * (1 - (v - y0) / (y1 - y0));
-  const ticks = 4, yt = Array.from({ length: ticks + 1 }, (_, i) => y0 + (y1 - y0) * i / ticks);
+  const ticks = 4, ytRaw = Array.from({ length: ticks + 1 }, (_, i) => y0 + (y1 - y0) * i / ticks);
+  const seen = new Set(), yt = ytRaw.filter(v => { const k = fmt(v); if (seen.has(k)) return false; seen.add(k); return true; });
   const xt = Array.from({ length: 5 }, (_, i) => x0 + (x1 - x0) * i / 4);
   const path = pts.map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Y(p.v).toFixed(1)}`).join("");
   host.innerHTML = `
