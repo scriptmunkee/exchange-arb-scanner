@@ -42,6 +42,9 @@ def scan_once(sources, store: Store, commission: dict, verbose: bool = True):
         "best_margin_pct": "" if best_margin is None else best_margin, "api_calls": sum(s.client.calls for s in sources),
         "secs": round(time.monotonic() - t0, 1),
     })
+    if errors:
+        with open(f"{store.dir}/errors-{ts:%Y-%m}.log", "a") as f:
+            f.write(f"{ts.isoformat(timespec='seconds')} {' | '.join(errors)}\n")
     if verbose:
         print(f"{ts:%H:%M:%S} matched={len(groups)} sm={len(by_ex.get('smarkets', []))} "
               f"mb={len(by_ex.get('matchbook', []))} arbs={len(opps)} near={near} best={best_margin} {'ERR ' + '; '.join(errors) if errors else ''}")

@@ -42,6 +42,7 @@ jobs:
 
       - name: Scan
         env:
+          PYTHONUNBUFFERED: "1"
           EXARB_COMMISSION: ${{ vars.EXARB_COMMISSION }}
         run: python -m exarb --duration "${{ github.event.inputs.duration || '270' }}" --interval 30 --data-dir databranch/data
 
