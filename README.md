@@ -52,8 +52,10 @@ Output (in `data/`):
 
 ## Always-on (GitHub Actions)
 
-`.github/workflows/scan.yml` runs the scanner for about 4.5 minutes every 5 minutes and commits the CSVs to the
-`data` branch. GitHub can delay or skip scheduled runs, so expect small gaps.
+`.github/workflows/scan.yml` runs the scanner for about 4.5 minutes, commits the CSVs to the `data` branch, then
+dispatches the next run, so it runs back to back. A 5-minute cron is a backup in case the chain breaks.
+
+To stop it: Settings, Secrets and variables, Actions, Variables, add `EXARB_STOP` = `1` (or disable the workflow).
 
 ## Dashboard
 
