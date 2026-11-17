@@ -18,7 +18,7 @@ SPORTS = {
     "tennis": {"event_type": "tennis_match", "market_type": "WINNER_2_WAY"},
 }
 CONTRACT_KEYS = {"HOME": "home", "DRAW": "draw", "AWAY": "away", "PLAYER_A": "home", "PLAYER_B": "away"}
-BATCH = 40
+BATCH = 25
 
 
 def _parse_dt(s: str) -> datetime:
@@ -36,6 +36,7 @@ class SmarketsSource:
         self._catalogue: dict[str, Market] = {}  # market_id -> Market skeleton
         self._contracts: dict[str, tuple[str, str]] = {}  # contract_id -> (market_id, key)
         self._built = 0.0
+        self.failed: list[str] = []  # per-market failures from the last fetch, logged by the CLI
 
     # ---- catalogue (events, markets, contracts) ---------------------------------
     def _events(self, event_type: str):
@@ -93,12 +94,13 @@ class SmarketsSource:
     def fetch(self) -> list[Market]:
         if not self._catalogue or time.monotonic() - self._built > self.catalogue_ttl:
             self._build_catalogue()
+        self.failed = []
         now = datetime.now(timezone.utc)
         live_ids = [mid for mid, m in self._catalogue.items() if m.start > now]
         fresh: dict[str, Market] = {}
         for i in range(0, len(live_ids), BATCH):
             chunk = live_ids[i : i + BATCH]
-            quotes = self.client.get_json(f"/markets/{','.join(chunk)}/quotes/")
+            quotes = self._quotes(chunk)
             for cid, q in quotes.items():
                 if cid not in self._contracts:
                     continue
@@ -113,6 +115,17 @@ class SmarketsSource:
                     best = max(q["bids"], key=lambda o: o["price"])  # highest prob = lowest lay odds
                     sel.lay = Price(prob_to_decimal(best["price"]), best["quantity"] * best["price"] / 1e8)
         return list(fresh.values())
+
+    def _quotes(self, chunk: list[str]) -> dict:
+        """Fetch quotes for a batch; on failure split it so one bad market cannot sink the scan."""
+        try:
+            return self.client.get_json(f"/markets/{','.join(chunk)}/quotes/", retries=2)
+        except Exception as e:
+            if len(chunk) == 1:
+                self.failed.append(f"market {chunk[0]}: {e}")
+                return {}
+            mid = len(chunk) // 2
+            return {**self._quotes(chunk[:mid]), **self._quotes(chunk[mid:])}
 
 
 def _clone(m: Market) -> Market:

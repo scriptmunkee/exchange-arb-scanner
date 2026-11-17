@@ -25,6 +25,7 @@ def scan_once(sources, store: Store, commission: dict, verbose: bool = True):
     for s in sources:
         try:
             by_ex[s.name] = s.fetch()
+            errors += [f"{s.name}: {f}" for f in getattr(s, "failed", [])]
         except Exception as e:  # one exchange failing must not kill the run
             errors.append(f"{s.name}: {e}")
             by_ex[s.name] = []
