@@ -111,3 +111,4 @@
 2026-11-17T23:54:06+00:00 smarkets: market 179405711: GET failed after 2 attempts: https://api.smarkets.com/v3/markets/179405711/quotes/
 2026-11-17T23:58:19+00:00 smarkets: market 179405711: GET failed after 2 attempts: https://api.smarkets.com/v3/markets/179405711/quotes/
 2026-11-18T10:05:30+00:00 smarkets: market 179537554: GET failed after 2 attempts: https://api.smarkets.com/v3/markets/179537554/quotes/
+2026-11-18T17:00:18+00:00 smarkets: market 179602335: GET failed after 2 attempts: https://api.smarkets.com/v3/markets/179602335/quotes/
